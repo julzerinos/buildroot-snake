@@ -4,16 +4,17 @@
 import sys
 from random import randint
 
+import signal
+
 import curses
 
 import time
+from time import sleep
+from datetime import timedelta
+
+import mpd
 
 import gpiod
-
-from pygame import mixer
-
-
-mixer.init()
 
 
 class Field:
@@ -104,7 +105,7 @@ class Snake:
         self.direction = ch
 
     def level_up(self):
-        mixer.Channel(2).play(SOUNDS['point'])
+        # mixer.Channel(2).play(SOUNDS['point'])
 
         # get last point direction
         a = self.coords[0]
@@ -164,17 +165,16 @@ class Snake:
         self.field.snake_coords = self.coords
 
         if not self.is_alive():
-            mixer.Channel(3).play(SOUNDS['dead'])
 
             time.sleep(1)
 
-            print("Congratulations, you may log in now.")
+            print("You have died.")
 
+            mpd_client.stop()
             sys.exit()
 
         # check if snake eat an entity
         if self.field.is_snake_eat_entity():
-            curses.beep()
             self.level_up()
             self.field.add_entity()
 
@@ -182,16 +182,26 @@ class Snake:
         self.field = field
 
 
+def sig_hand(sig, frame):
+    mpd_client.stop()
+    sys.exit(0)
+
+
 def main(screen):
-    chip = gpiod.Chip('10008000.gpio')
-    dir_buttons = chip.get_lines([0, 1, 2, 3])
+    chip = gpiod.chip('9008000.gpio')
+    dir_buttons = chip.get_lines([12, 13, 14, 15])
     line_map = {
-        str(dir_buttons.to_list()[0]): curses.KEY_UP,
-        str(dir_buttons.to_list()[1]): curses.KEY_RIGHT,
-        str(dir_buttons.to_list()[2]): curses.KEY_DOWN,
-        str(dir_buttons.to_list()[3]): curses.KEY_LEFT
+        str(dir_buttons.get(0).offset): curses.KEY_UP,
+        str(dir_buttons.get(1).offset): curses.KEY_RIGHT,
+        str(dir_buttons.get(2).offset): curses.KEY_DOWN,
+        str(dir_buttons.get(3).offset): curses.KEY_LEFT
     }
-    dir_buttons.request(consumer='snakeleft', type=gpiod.LINE_REQ_EV_FALLING_EDGE)
+
+    config = gpiod.line_request()
+    config.consumer = 'snake'
+    config.request_type = gpiod.line_request.EVENT_FALLING_EDGE
+
+    dir_buttons.request(config)
 
     # Configure screen
     screen.timeout(0)
@@ -203,12 +213,11 @@ def main(screen):
 
     while(True):
 
-        loop_bulk = dir_buttons.event_wait(1)
+        loop_bulk = dir_buttons.event_wait(timedelta(seconds=1))
 
         if loop_bulk:
-            mixer.Channel(1).play(SOUNDS['move'])
 
-            src = str(loop_bulk[0].event_read().source)
+            src = str(loop_bulk[0].event_read().source.offset)
 
             if line_map.get(src) is not None:
                 snake.set_direction(line_map[src])
@@ -251,20 +260,17 @@ ENTRY = r"""
            LOADING
 """
 
-if __name__ == '__main__':
+mpd_client = None
 
-    mixer.set_num_channels(4)  # default is 8
+if __name__ == '__main__':
 
     print(ENTRY)
 
-    SOUNDS = {
-        'point': mixer.Sound('point.wav'),
-        'move':  mixer.Sound('move.wav'),
-        'dead':  mixer.Sound('dead.wav'),
-        'bg':    'bg.wav'
-    }
+    signal.signal(signal.SIGINT, sig_hand)
 
-    mixer.music.load(SOUNDS['bg'])
-    mixer.music.play()
+    mpd_client = mpd.MPDClient()
+    mpd_client.connect('localhost', 6600)
+    mpd_client.add('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3')
+    mpd_client.play()
 
     curses.wrapper(main)
